@@ -3,6 +3,7 @@ package com.peach.android_screen_share
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -97,12 +98,25 @@ class ScreenCaptureService : Service() {
             .setContentText("Waiting for dashboard connection…")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+
+            startForeground(
+                1,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            // Android 7–9
+            startForeground(1, notification)
+        }
+
+
     }
 
     private fun createNotificationChannel() {
@@ -113,9 +127,10 @@ class ScreenCaptureService : Service() {
                 "Screen Share",
                 NotificationManager.IMPORTANCE_HIGH // 🔴 MUST BE LOW
             ).apply {
-                setSound(null, null)
-                enableVibration(false)
-                setShowBadge(false)
+                description = "Screen sharing service"
+//                setSound(null, null)
+//                enableVibration(false)
+                setShowBadge(true)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
@@ -153,11 +168,41 @@ class ScreenCaptureService : Service() {
 
     private fun initPeerConnection() {
 
+//        val iceServers = listOf(
+//            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+//        )
+
         val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
+                .createIceServer(),
+
+            // TURN UDP
+            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=udp")
+                .setUsername("peach")
+                .setPassword("PeAmISo@2026")
+                .createIceServer(),
+
+            // TURN TCP
+            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=tcp")
+                .setUsername("peach")
+                .setPassword("PeAmISo@2026")
+                .createIceServer(),
+
+            // TURN TLS (VERY IMPORTANT for mobile networks)
+            PeerConnection.IceServer.builder("turns:18.234.108.84:5349")
+                .setUsername("peach")
+                .setPassword("PeAmISo@2026")
+                .createIceServer()
         )
 
-        val config = PeerConnection.RTCConfiguration(iceServers)
+        val config = PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            iceTransportsType = PeerConnection.IceTransportsType.ALL
+            continualGatheringPolicy =
+                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        }
+
+//        val config = PeerConnection.RTCConfiguration(iceServers)
 
         peerConnection = peerConnectionFactory.createPeerConnection(
             config,
@@ -180,9 +225,17 @@ class ScreenCaptureService : Service() {
                     Log.d("ScreenShare", "PC state: $state")
                 }
 
+                override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                    Log.d("ScreenShare", "ICE state = $state")
+                }
+
+                override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
+                    Log.d("ScreenShare", "ICE gathering = $state")
+                }
+
                 override fun onIceConnectionReceivingChange(p0: Boolean) {}
-                override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
-                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+//                override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
+//                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
                 override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
                 override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
                 override fun onRemoveStream(p0: MediaStream?) {}
@@ -195,6 +248,8 @@ class ScreenCaptureService : Service() {
 
         Log.d("ScreenShare", "PC created")
     }
+
+
 
     // ---------------- Start Screen Capture ----------------
 
@@ -219,7 +274,8 @@ class ScreenCaptureService : Service() {
                 screenCapturer!!.startCapture(480, 960, 15)
 
                 videoTrack = peerConnectionFactory.createVideoTrack("screen", videoSource!!)
-                peerConnection!!.addTrack(videoTrack!!)
+                videoTrack!!.setEnabled(true)
+                peerConnection!!.addTrack(videoTrack!!, listOf("screen_stream"))
 
             } catch (e: Exception) {
                 Log.e("ScreenShare", "Capture error: ${e.message}")
