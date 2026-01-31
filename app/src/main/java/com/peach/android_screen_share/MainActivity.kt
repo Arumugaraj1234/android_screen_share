@@ -13,26 +13,39 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.widget.Button
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.app.ActivityCompat
-
-
 
 class MainActivity : AppCompatActivity() {
 
-    private val REQUEST_CAPTURE = 1001
-    private lateinit var mediaProjectionManager: MediaProjectionManager
+    private lateinit var projectionManager: MediaProjectionManager
+    private var captureInProgress = false   // 🔒 CRITICAL LOCK
 
-    // 🔔 Notification permission launcher (CRITICAL for IQOO)
+    // --------------------------------------------------
+    // 🔔 Notification permission (Android 13+)
+    // --------------------------------------------------
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) {
-                Log.e("MainActivity", "Notification permission denied")
-                openNotificationSettings()
+            if (granted) {
+                requestScreenCapture()
             } else {
-                Log.d("MainActivity", "Notification permission granted")
+                openNotificationSettings()
+            }
+        }
+
+    // --------------------------------------------------
+    // 🎥 Screen capture permission (MediaProjection)
+    // --------------------------------------------------
+    private val screenCaptureLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            captureInProgress = false
+
+            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                startScreenShareService(result.resultCode, result.data!!)
+            } else {
+                Log.w("MainActivity", "Screen capture permission denied")
             }
         }
 
@@ -40,27 +53,30 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        mediaProjectionManager =
+        projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-//        requestNotificationPermission()
-        // 🔋 Ask battery optimization ignore (good, keep this)
         requestIgnoreBatteryOptimizations()
 
         findViewById<Button>(R.id.btnStart).setOnClickListener {
-            ensureNotificationPermission()
-            startScreenCaptureRequest()
+            if (captureInProgress) {
+                Log.w("MainActivity", "Capture already in progress, ignoring")
+                return@setOnClickListener
+            }
+
+            captureInProgress = true
+            ensureNotificationPermissionAndStart()
         }
 
-        findViewById<Button>(R.id.btnStop)?.setOnClickListener {
+        findViewById<Button>(R.id.btnStop).setOnClickListener {
             stopScreenShareService()
         }
     }
 
-    // ------------------------------------------------
-    // 🔔 Notification permission (MANDATORY)
-    // ------------------------------------------------
-    private fun ensureNotificationPermission() {
+    // --------------------------------------------------
+    // 🔔 Permission flow
+    // --------------------------------------------------
+    private fun ensureNotificationPermissionAndStart() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -71,84 +87,82 @@ class MainActivity : AppCompatActivity() {
                 notificationPermissionLauncher.launch(
                     Manifest.permission.POST_NOTIFICATIONS
                 )
+                return
             }
         }
+        requestScreenCapture()
     }
 
-    private fun openNotificationSettings() {
-        try {
-            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
+    // --------------------------------------------------
+    // 🎥 Request MediaProjection
+    // --------------------------------------------------
+    private fun requestScreenCapture() {
+        val intent = projectionManager.createScreenCaptureIntent()
+        screenCaptureLauncher.launch(intent)
+    }
+
+    // --------------------------------------------------
+    // ▶ Start foreground service (ONE TIME ONLY)
+    // --------------------------------------------------
+    private fun startScreenShareService(
+        resultCode: Int,
+        data: Intent
+    ) {
+        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            putExtra("resultCode", resultCode)
+            putExtra("data", data)
         }
+
+        ContextCompat.startForegroundService(this, serviceIntent)
+        Log.d("MainActivity", "Screen share service started")
     }
 
-    // ------------------------------------------------
-    // 🎥 Screen capture
-    // ------------------------------------------------
-    private fun startScreenCaptureRequest() {
-        val intent = mediaProjectionManager.createScreenCaptureIntent()
-        startActivityForResult(intent, REQUEST_CAPTURE)
+    // --------------------------------------------------
+    // ⛔ Stop service
+    // --------------------------------------------------
+    private fun stopScreenShareService() {
+        stopService(Intent(this, ScreenCaptureService::class.java))
+        Log.d("MainActivity", "Screen share service stopped")
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == REQUEST_CAPTURE && resultCode == Activity.RESULT_OK && data != null) {
-
-            val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
-                putExtra("resultCode", resultCode)
-                putExtra("data", data)
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-//                startForegroundService(serviceIntent)
-                ContextCompat.startForegroundService(this, serviceIntent)
-
-            } else {
-                startService(serviceIntent)
-            }
-
-            Log.d("MainActivity", "Screen share started")
-        }
-    }
-
-    // ------------------------------------------------
-    // 🔋 Battery optimization
-    // ------------------------------------------------
+    // --------------------------------------------------
+    // 🔋 Battery optimization (OEM survival)
+    // --------------------------------------------------
     private fun requestIgnoreBatteryOptimizations() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         val pkg = packageName
 
         if (!pm.isIgnoringBatteryOptimizations(pkg)) {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$pkg")
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:$pkg"))
+                )
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Battery optimization request failed")
             }
-            startActivity(intent)
         }
     }
 
-    // ------------------------------------------------
-    // ⛔ Stop service
-    // ------------------------------------------------
-    private fun stopScreenShareService() {
+    // --------------------------------------------------
+    // 🔔 Notification settings fallback
+    // --------------------------------------------------
+    private fun openNotificationSettings() {
         try {
-            stopService(Intent(this, ScreenCaptureService::class.java))
-            Log.d("MainActivity", "Stop service request sent")
+            startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            )
         } catch (e: Exception) {
-            Log.e("MainActivity", "Stop error: ${e.message}")
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
         }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         stopScreenShareService()
+        super.onDestroy()
     }
-
 }

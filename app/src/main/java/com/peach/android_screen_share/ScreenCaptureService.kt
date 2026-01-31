@@ -5,10 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
-import android.os.Build
-import android.os.IBinder
-import android.provider.Settings
+import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import okhttp3.*
@@ -18,138 +15,119 @@ import java.util.concurrent.Executors
 
 class ScreenCaptureService : Service() {
 
-    private val SIGNALING_URL = "wss://peachscreenshare.misoft.ca/ws"
+    companion object {
+        private const val TAG = "ScreenShare"
+        private const val SIGNALING_URL = "wss://peachscreenshare.misoft.ca/ws"
+        private const val NOTIF_ID = 1001
+        private const val CHANNEL_ID = "screen_share_channel"
+    }
 
-    private lateinit var mediaProjectionManager: MediaProjectionManager
-    private var mediaProjection: MediaProjection? = null
-
+    // ===== WebSocket =====
     private val httpClient = OkHttpClient()
     private lateinit var ws: WebSocket
+    @Volatile private var wsConnected = false
 
+    // ===== WebRTC =====
     private lateinit var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
-    private var screenCapturer: VideoCapturer? = null
+    private var screenCapturer: ScreenCapturerAndroid? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
 
-    private val executor = Executors.newSingleThreadExecutor()
+    // ===== Projection =====
+    private var projectionIntent: Intent? = null
 
+    // ===== State =====
+    private val executor = Executors.newSingleThreadExecutor()
     private lateinit var deviceId: String
-    private var wsConnected = false
-    private var projectionStarted = false
-    private var shareRequested = false
-    private var stopping = false
+    @Volatile private var captureStarted = false
+    @Volatile private var shareRequested = false
+    @Volatile private var offerSent = false
+    @Volatile private var stopping = false
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // =====================================================
+    // SERVICE LIFECYCLE
+    // =====================================================
 
     override fun onCreate() {
         super.onCreate()
 
-        mediaProjectionManager =
-            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-
-        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-//        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-$androidId"
-        deviceId = Build.MANUFACTURER + "-" +
-                Build.MODEL + "-" +
-                System.currentTimeMillis()
-
+        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}"
         createNotificationChannel()
 
-        Log.d("ScreenShare", "Service created: $deviceId")
+        Log.d(TAG, "Service created: $deviceId")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
         startAsForeground()
 
-        val resultCode = intent?.getIntExtra("resultCode", -1) ?: -1
+        if (captureStarted || stopping) {
+            Log.w(TAG, "Already running, ignoring start")
+            return START_NOT_STICKY
+        }
+
+        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
         val data = intent?.getParcelableExtra<Intent>("data")
+
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            Log.e(TAG, "Invalid projection permission")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // 🔒 Store permission intent ONCE
+        projectionIntent = data
 
         initPeerConnectionFactory()
         initPeerConnection()
         initWebSocket()
-
-        if (resultCode == Activity.RESULT_OK && data != null) {
-            startScreenShare(resultCode, data)
-        } else {
-            Log.e("ScreenShare", "Projection intent missing…")
-        }
+        startCaptureOnce()
 
         return START_NOT_STICKY
     }
 
-    // ---------------- Foreground Service ----------------
+    // =====================================================
+    // FOREGROUND SERVICE
+    // =====================================================
 
     private fun startAsForeground() {
-//        val notification = NotificationCompat.Builder(this, "screen_share_channel")
-//            .setContentTitle("Screen Sharing Enabled")
-//            .setContentText("Waiting for dashboard request…")
-//            .setSmallIcon(android.R.drawable.ic_media_play)
-//            .setOngoing(true)
-//            .build()
-
-
-//        .setForegroundServiceBehavior(
-//            NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE
-//        )
-        val notification = NotificationCompat.Builder(this, "screen_share_channel")
-            .setContentTitle("Screen Sharing Active")
-            .setContentText("Waiting for dashboard connection…")
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Screen sharing active")
+            .setContentText("Your screen is being shared")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+
             startForeground(
-                1,
+                NOTIF_ID,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             )
         } else {
-            // Android 7–9
-            startForeground(1, notification)
+            startForeground(NOTIF_ID, notification)
         }
-
-
     }
 
     private fun createNotificationChannel() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= 26) {
             val channel = NotificationChannel(
-                "screen_share_channel",
+                CHANNEL_ID,
                 "Screen Share",
-                NotificationManager.IMPORTANCE_HIGH // 🔴 MUST BE LOW
-            ).apply {
-                description = "Screen sharing service"
-//                setSound(null, null)
-//                enableVibration(false)
-                setShowBadge(true)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            }
-
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
-
-
-//        if (Build.VERSION.SDK_INT >= 26) {
-//            val channel = NotificationChannel(
-//                "screen_share_channel",
-//                "Screen Share",
-//                NotificationManager.IMPORTANCE_HIGH
-//            )
-//            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-//        }
     }
 
-    // ---------------- WebRTC SETUP ----------------
+    // =====================================================
+    // WEBRTC SETUP
+    // =====================================================
 
     private fun initPeerConnectionFactory() {
         PeerConnectionFactory.initialize(
@@ -162,33 +140,24 @@ class ScreenCaptureService : Service() {
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
             .createPeerConnectionFactory()
-
-        Log.d("ScreenShare", "PC Factory OK")
     }
 
     private fun initPeerConnection() {
 
-//        val iceServers = listOf(
-//            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-//        )
-
         val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
-                .createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
 
-            // TURN UDP
+            // TURN (important for mobile data)
             PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=udp")
                 .setUsername("peach")
                 .setPassword("PeAmISo@2026")
                 .createIceServer(),
 
-            // TURN TCP
             PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=tcp")
                 .setUsername("peach")
                 .setPassword("PeAmISo@2026")
                 .createIceServer(),
 
-            // TURN TLS (VERY IMPORTANT for mobile networks)
             PeerConnection.IceServer.builder("turns:18.234.108.84:5349")
                 .setUsername("peach")
                 .setPassword("PeAmISo@2026")
@@ -198,15 +167,12 @@ class ScreenCaptureService : Service() {
         val config = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             iceTransportsType = PeerConnection.IceTransportsType.ALL
-            continualGatheringPolicy =
-                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
-
-//        val config = PeerConnection.RTCConfiguration(iceServers)
 
         peerConnection = peerConnectionFactory.createPeerConnection(
             config,
             object : PeerConnection.Observer {
+
                 override fun onIceCandidate(c: IceCandidate) {
                     sendSignal(
                         mapOf(
@@ -222,69 +188,83 @@ class ScreenCaptureService : Service() {
                 }
 
                 override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
-                    Log.d("ScreenShare", "PC state: $state")
+                    Log.d(TAG, "PC state=$state")
                 }
 
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    Log.d("ScreenShare", "ICE state = $state")
+                    Log.d(TAG, "ICE state=$state")
                 }
 
-                override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-                    Log.d("ScreenShare", "ICE gathering = $state")
-                }
-
-                override fun onIceConnectionReceivingChange(p0: Boolean) {}
-//                override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
-//                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
                 override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
-                override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
                 override fun onRemoveStream(p0: MediaStream?) {}
                 override fun onDataChannel(p0: DataChannel?) {}
                 override fun onAddStream(p0: MediaStream?) {}
                 override fun onRenegotiationNeeded() {}
                 override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
+                override fun onIceConnectionReceivingChange(p0: Boolean) {}
             }
         )
-
-        Log.d("ScreenShare", "PC created")
     }
 
+    // =====================================================
+    // SCREEN CAPTURE (OEM SAFE)
+    // =====================================================
 
+    private fun startCaptureOnce() {
+        synchronized(this) {
+            if (captureStarted) return
+            captureStarted = true
+        }
 
-    // ---------------- Start Screen Capture ----------------
-
-    private fun startScreenShare(resultCode: Int, data: Intent) {
         executor.execute {
             try {
-                mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
-                projectionStarted = true
+                val intent = projectionIntent ?: throw IllegalStateException("Projection intent null")
 
                 val egl = EglBase.create()
-                val textureHelper = SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext)
+                val helper = SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext)
 
-                screenCapturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        stopScreenShare()
+                screenCapturer = ScreenCapturerAndroid(
+                    intent,
+                    object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            Log.w(TAG, "MediaProjection stopped by system")
+                            stopScreenShare()
+                        }
                     }
-                })
+                )
 
                 videoSource = peerConnectionFactory.createVideoSource(true)
+                videoSource!!.adaptOutputFormat(720, 1280, 30)
 
-                screenCapturer!!.initialize(textureHelper, this, videoSource!!.capturerObserver)
-                screenCapturer!!.startCapture(480, 960, 15)
+                screenCapturer!!.initialize(
+                    helper,
+                    this,
+                    videoSource!!.capturerObserver
+                )
+
+                screenCapturer!!.startCapture(720, 1280, 30)
 
                 videoTrack = peerConnectionFactory.createVideoTrack("screen", videoSource!!)
                 videoTrack!!.setEnabled(true)
-                peerConnection!!.addTrack(videoTrack!!, listOf("screen_stream"))
+
+                Handler(mainLooper).post {
+                    peerConnection?.addTrack(videoTrack!!, listOf("screen_stream"))
+                }
+
+                Log.d(TAG, "Screen capture started")
 
             } catch (e: Exception) {
-                Log.e("ScreenShare", "Capture error: ${e.message}")
+                Log.e(TAG, "Capture start failed", e)
                 stopScreenShare()
             }
         }
     }
 
-    // ---------------- WebSocket ----------------
+    // =====================================================
+    // SIGNALING
+    // =====================================================
 
     private fun initWebSocket() {
         val req = Request.Builder().url(SIGNALING_URL).build()
@@ -293,40 +273,31 @@ class ScreenCaptureService : Service() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 wsConnected = true
-
-                webSocket.send(
-                    """{"role":"device","deviceId":"$deviceId"}"""
-                )
+                webSocket.send("""{"role":"device","deviceId":"$deviceId"}""")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = JSONObject(text)
                 when (json.optString("type")) {
-
                     "requestShare" -> {
                         shareRequested = true
-                        makeOffer()
+                        maybeCreateOffer()
                     }
-
                     "answer" -> handleAnswer(json)
-
                     "candidate" -> handleCandidate(json)
-
                     "stopShare" -> stopScreenShare()
                 }
             }
         })
     }
 
-    private fun makeOffer() {
-        if (!projectionStarted || !wsConnected || !shareRequested) return
+    private fun maybeCreateOffer() {
+        if (!captureStarted || !wsConnected || !shareRequested || offerSent) return
+        offerSent = true
 
         peerConnection?.createOffer(object : SdpObserver {
-
             override fun onCreateSuccess(sdp: SessionDescription) {
-
                 peerConnection?.setLocalDescription(this, sdp)
-
                 sendSignal(
                     mapOf(
                         "type" to "offer",
@@ -335,7 +306,6 @@ class ScreenCaptureService : Service() {
                     )
                 )
             }
-
             override fun onSetSuccess() {}
             override fun onSetFailure(p0: String?) {}
             override fun onCreateFailure(p0: String?) {}
@@ -343,62 +313,58 @@ class ScreenCaptureService : Service() {
     }
 
     private fun handleAnswer(msg: JSONObject) {
-        val sdpText = msg.getJSONObject("sdp").getString("sdp")
-        val answer = SessionDescription(SessionDescription.Type.ANSWER, sdpText)
-
-        peerConnection?.setRemoteDescription(object : SdpObserver {
-            override fun onSetSuccess() {}
-            override fun onSetFailure(p0: String?) {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onCreateSuccess(p0: SessionDescription?) {}
-        }, answer)
+        val sdp = msg.getJSONObject("sdp").getString("sdp")
+        peerConnection?.setRemoteDescription(
+            object : SdpObserver {
+                override fun onSetSuccess() {}
+                override fun onSetFailure(p0: String?) {}
+                override fun onCreateFailure(p0: String?) {}
+                override fun onCreateSuccess(p0: SessionDescription?) {}
+            },
+            SessionDescription(SessionDescription.Type.ANSWER, sdp)
+        )
     }
 
     private fun handleCandidate(msg: JSONObject) {
         val c = msg.getJSONObject("candidate")
-
-        val ice = IceCandidate(
-            c.getString("sdpMid"),
-            c.getInt("sdpMLineIndex"),
-            c.getString("candidate")
+        peerConnection?.addIceCandidate(
+            IceCandidate(
+                c.getString("sdpMid"),
+                c.getInt("sdpMLineIndex"),
+                c.getString("candidate")
+            )
         )
-
-        peerConnection?.addIceCandidate(ice)
     }
 
     private fun sendSignal(map: Map<String, Any?>) {
-        try {
-            ws.send(JSONObject(map).toString())
-        } catch (_: Exception) {}
+        ws.send(JSONObject(map).toString())
     }
 
-    // ---------------- STOP SCREEN SHARE ----------------
+    // =====================================================
+    // STOP & CLEANUP
+    // =====================================================
 
     private fun stopScreenShare() {
         if (stopping) return
         stopping = true
 
-        Log.d("ScreenShare", "STOPPING SCREEN SHARE…")
+        Log.d(TAG, "Stopping screen share")
 
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
+        screenCapturer = null
 
-        videoSource?.dispose()
         videoTrack?.dispose()
+        videoSource?.dispose()
 
         peerConnection?.close()
         peerConnection = null
 
-        try { mediaProjection?.stop() } catch (_: Exception) {}
-        mediaProjection = null
-
         try { ws.close(1000, "stop") } catch (_: Exception) {}
 
-        httpClient.dispatcher.executorService.shutdown()
+        projectionIntent = null
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopForeground(true)
         stopSelf()
-
-        Log.d("ScreenShare", "Screen share STOPPED SUCCESSFULLY.")
     }
 
     override fun onDestroy() {
