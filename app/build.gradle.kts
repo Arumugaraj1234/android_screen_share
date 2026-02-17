@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.peach.android_screen_share"
+    namespace = "com.mipresence.mdm.admin"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.peach.android_screen_share"
+        applicationId = "com.mipresence.mdm.admin"
         minSdk = 24
         targetSdk = 34
         versionCode = 1

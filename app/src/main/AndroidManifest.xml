@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.peach.android_screen_share"
+    package="com.mipresence.mdm.admin"
     xmlns:tools="http://schemas.android.com/tools">
 
 

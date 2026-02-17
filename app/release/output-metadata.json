@@ -4,7 +4,7 @@
     "type": "APK",
     "kind": "Directory"
   },
-  "applicationId": "com.peach.android_screen_share",
+  "applicationId": "com.mipresence.mdm.admin",
   "variantName": "release",
   "elements": [
     {
