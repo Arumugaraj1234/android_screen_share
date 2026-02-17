@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">android-screen-share</string>
+    <string name="enterprise_id">Enterprise ID: %1$s</string>
 </resources>
