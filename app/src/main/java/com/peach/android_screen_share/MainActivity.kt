@@ -17,11 +17,15 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import android.view.WindowManager
+import android.app.admin.DevicePolicyManager
+import android.widget.TextView
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var projectionManager: MediaProjectionManager
     private var captureInProgress = false   // 🔒 CRITICAL LOCK
+    private lateinit var deviceId: String
 
     // --------------------------------------------------
     // 🔔 Notification permission (Android 13+)
@@ -52,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -71,6 +76,14 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnStop).setOnClickListener {
             stopScreenShareService()
         }
+        val txtId = findViewById<TextView>(R.id.txtEnterpriseId)
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val enterpriseId = getEnterpriseDeviceId(this)
+
+        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
+
+        txtId.text = getString(R.string.enterprise_id, deviceId)
     }
 
     // --------------------------------------------------
@@ -90,6 +103,7 @@ class MainActivity : AppCompatActivity() {
                 return
             }
         }
+
         requestScreenCapture()
     }
 
@@ -160,6 +174,32 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
+
+    @Suppress("DEPRECATION")
+    fun getEnterpriseDeviceId(context: Context): String {
+        return try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                    as DevicePolicyManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                dpm.enrollmentSpecificId ?: "ENROLLMENT_ID_NULL"
+
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    Build.getSerial()
+                } catch (e: SecurityException) {
+                    "SERIAL_PERMISSION_DENIED"
+                }
+
+            } else {
+                Build.SERIAL ?: "SERIAL_NULL"
+            }
+
+        } catch (e: Exception) {
+            "ID_UNAVAILABLE"
+        }
+    }
+
 
     override fun onDestroy() {
         stopScreenShareService()

@@ -1,6 +1,7 @@
 package com.peach.android_screen_share
 
 import android.app.*
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -12,6 +13,10 @@ import okhttp3.*
 import org.json.JSONObject
 import org.webrtc.*
 import java.util.concurrent.Executors
+import android.content.pm.PackageManager
+import android.provider.Settings
+import android.telephony.TelephonyManager
+import androidx.annotation.RequiresApi
 
 class ScreenCaptureService : Service() {
 
@@ -33,6 +38,7 @@ class ScreenCaptureService : Service() {
     private var screenCapturer: ScreenCapturerAndroid? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     // ===== Projection =====
     private var projectionIntent: Intent? = null
@@ -45,24 +51,60 @@ class ScreenCaptureService : Service() {
     @Volatile private var offerSent = false
     @Volatile private var stopping = false
 
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     // =====================================================
     // SERVICE LIFECYCLE
     // =====================================================
 
+
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate() {
         super.onCreate()
 
-        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}"
+
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val enterpriseId = getEnterpriseDeviceId(dpm)
+
+        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
         createNotificationChannel()
 
         Log.d(TAG, "Service created: $deviceId")
     }
 
+    @Suppress("DEPRECATION")
+    fun getEnterpriseDeviceId(dpm: DevicePolicyManager): String {
+
+        return try {
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+
+                dpm.enrollmentSpecificId ?: "ENROLLMENT_ID_NULL"
+
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Android 8+
+                try {
+                    //Build.getSerial()
+                    "ERROR"
+                } catch (e: SecurityException) {
+                    "SERIAL_PERMISSION_DENIED"
+                }
+
+            } else {
+                Build.SERIAL ?: "SERIAL_NULL"
+            }
+
+        } catch (e: Exception) {
+            "ID_UNAVAILABLE"
+        }
+    }
+
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
         startAsForeground()
+        acquireWakeLock()
 
         if (captureStarted || stopping) {
             Log.w(TAG, "Already running, ignoring start")
@@ -87,6 +129,26 @@ class ScreenCaptureService : Service() {
         startCaptureOnce()
 
         return START_NOT_STICKY
+    }
+
+
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "ScreenShare::WakeLock"
+            )
+
+            wakeLock?.setReferenceCounted(false)
+            wakeLock?.acquire()
+
+            Log.d(TAG, "WakeLock acquired")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "WakeLock failed", e)
+        }
     }
 
     // =====================================================
@@ -207,6 +269,9 @@ class ScreenCaptureService : Service() {
             }
         )
     }
+
+
+
 
     // =====================================================
     // SCREEN CAPTURE (OEM SAFE)
@@ -360,6 +425,11 @@ class ScreenCaptureService : Service() {
         peerConnection = null
 
         try { ws.close(1000, "stop") } catch (_: Exception) {}
+
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
 
         projectionIntent = null
 
