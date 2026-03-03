@@ -127,6 +127,9 @@ class ScreenCaptureService : Service() {
         initPeerConnection()
         initWebSocket()
         startCaptureOnce()
+        Handler(mainLooper).postDelayed({
+            screenCapturer?.changeCaptureFormat(720, 1280, 15)
+        }, 1000)
 
         return START_NOT_STICKY
     }
@@ -301,7 +304,7 @@ class ScreenCaptureService : Service() {
                 )
 
                 videoSource = peerConnectionFactory.createVideoSource(true)
-                videoSource!!.adaptOutputFormat(720, 1280, 30)
+                videoSource!!.adaptOutputFormat(720, 1280, 15)
 
                 screenCapturer!!.initialize(
                     helper,
@@ -309,10 +312,11 @@ class ScreenCaptureService : Service() {
                     videoSource!!.capturerObserver
                 )
 
-                screenCapturer!!.startCapture(720, 1280, 30)
+                screenCapturer!!.startCapture(720, 1280, 15)
 
                 videoTrack = peerConnectionFactory.createVideoTrack("screen", videoSource!!)
                 videoTrack!!.setEnabled(true)
+
 
                 Handler(mainLooper).post {
                     peerConnection?.addTrack(videoTrack!!, listOf("screen_stream"))
