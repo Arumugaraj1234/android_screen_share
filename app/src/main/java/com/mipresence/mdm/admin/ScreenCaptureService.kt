@@ -34,7 +34,8 @@ class ScreenCaptureService : Service() {
 
     // ===== WebRTC =====
     private lateinit var peerConnectionFactory: PeerConnectionFactory
-    private var peerConnection: PeerConnection? = null
+//    private var peerConnection: PeerConnection? = null
+    private val peerConnections = mutableMapOf<String, PeerConnection>()
     private var screenCapturer: ScreenCapturerAndroid? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
@@ -124,7 +125,8 @@ class ScreenCaptureService : Service() {
         projectionIntent = data
 
         initPeerConnectionFactory()
-        initPeerConnection()
+
+//        initPeerConnection()
         initWebSocket()
         startCaptureOnce()
         Handler(mainLooper).postDelayed({
@@ -207,71 +209,73 @@ class ScreenCaptureService : Service() {
             .createPeerConnectionFactory()
     }
 
-    private fun initPeerConnection() {
 
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
 
-            // TURN (important for mobile data)
-            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=udp")
-                .setUsername("peach")
-                .setPassword("PeAmISo@2026")
-                .createIceServer(),
-
-            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=tcp")
-                .setUsername("peach")
-                .setPassword("PeAmISo@2026")
-                .createIceServer(),
-
-            PeerConnection.IceServer.builder("turns:18.234.108.84:5349")
-                .setUsername("peach")
-                .setPassword("PeAmISo@2026")
-                .createIceServer()
-        )
-
-        val config = PeerConnection.RTCConfiguration(iceServers).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            iceTransportsType = PeerConnection.IceTransportsType.ALL
-        }
-
-        peerConnection = peerConnectionFactory.createPeerConnection(
-            config,
-            object : PeerConnection.Observer {
-
-                override fun onIceCandidate(c: IceCandidate) {
-                    sendSignal(
-                        mapOf(
-                            "type" to "candidate",
-                            "deviceId" to deviceId,
-                            "candidate" to mapOf(
-                                "candidate" to c.sdp,
-                                "sdpMid" to c.sdpMid,
-                                "sdpMLineIndex" to c.sdpMLineIndex
-                            )
-                        )
-                    )
-                }
-
-                override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
-                    Log.d(TAG, "PC state=$state")
-                }
-
-                override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    Log.d(TAG, "ICE state=$state")
-                }
-
-                override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
-                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
-                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
-                override fun onRemoveStream(p0: MediaStream?) {}
-                override fun onDataChannel(p0: DataChannel?) {}
-                override fun onAddStream(p0: MediaStream?) {}
-                override fun onRenegotiationNeeded() {}
-                override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
-                override fun onIceConnectionReceivingChange(p0: Boolean) {}
-            }
-        )
-    }
+//    private fun initPeerConnection() {
+//
+//        val iceServers = listOf(
+//            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+//
+//            // TURN (important for mobile data)
+//            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=udp")
+//                .setUsername("peach")
+//                .setPassword("PeAmISo@2026")
+//                .createIceServer(),
+//
+//            PeerConnection.IceServer.builder("turn:18.234.108.84:3478?transport=tcp")
+//                .setUsername("peach")
+//                .setPassword("PeAmISo@2026")
+//                .createIceServer(),
+//
+//            PeerConnection.IceServer.builder("turns:18.234.108.84:5349")
+//                .setUsername("peach")
+//                .setPassword("PeAmISo@2026")
+//                .createIceServer()
+//        )
+//
+//        val config = PeerConnection.RTCConfiguration(iceServers).apply {
+//            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+//            iceTransportsType = PeerConnection.IceTransportsType.ALL
+//        }
+//
+//        peerConnection = peerConnectionFactory.createPeerConnection(
+//            config,
+//            object : PeerConnection.Observer {
+//
+//                override fun onIceCandidate(c: IceCandidate) {
+//                    sendSignal(
+//                        mapOf(
+//                            "type" to "candidate",
+//                            "deviceId" to deviceId,
+//                            "candidate" to mapOf(
+//                                "candidate" to c.sdp,
+//                                "sdpMid" to c.sdpMid,
+//                                "sdpMLineIndex" to c.sdpMLineIndex
+//                            )
+//                        )
+//                    )
+//                }
+//
+//                override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
+//                    Log.d(TAG, "PC state=$state")
+//                }
+//
+//                override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+//                    Log.d(TAG, "ICE state=$state")
+//                }
+//
+//                override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
+//                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+//                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
+//                override fun onRemoveStream(p0: MediaStream?) {}
+//                override fun onDataChannel(p0: DataChannel?) {}
+//                override fun onAddStream(p0: MediaStream?) {}
+//                override fun onRenegotiationNeeded() {}
+//                override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
+//                override fun onIceConnectionReceivingChange(p0: Boolean) {}
+//            }
+//        )
+//    }
 
 
 
@@ -280,7 +284,9 @@ class ScreenCaptureService : Service() {
     // SCREEN CAPTURE (OEM SAFE)
     // =====================================================
 
+
     private fun startCaptureOnce() {
+
         synchronized(this) {
             if (captureStarted) return
             captureStarted = true
@@ -288,10 +294,12 @@ class ScreenCaptureService : Service() {
 
         executor.execute {
             try {
-                val intent = projectionIntent ?: throw IllegalStateException("Projection intent null")
+                val intent = projectionIntent
+                    ?: throw IllegalStateException("Projection intent null")
 
                 val egl = EglBase.create()
-                val helper = SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext)
+                val helper =
+                    SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext)
 
                 screenCapturer = ScreenCapturerAndroid(
                     intent,
@@ -304,6 +312,7 @@ class ScreenCaptureService : Service() {
                 )
 
                 videoSource = peerConnectionFactory.createVideoSource(true)
+
                 videoSource!!.adaptOutputFormat(720, 1280, 15)
 
                 screenCapturer!!.initialize(
@@ -314,15 +323,12 @@ class ScreenCaptureService : Service() {
 
                 screenCapturer!!.startCapture(720, 1280, 15)
 
-                videoTrack = peerConnectionFactory.createVideoTrack("screen", videoSource!!)
+                videoTrack =
+                    peerConnectionFactory.createVideoTrack("screen", videoSource!!)
+
                 videoTrack!!.setEnabled(true)
 
-
-                Handler(mainLooper).post {
-                    peerConnection?.addTrack(videoTrack!!, listOf("screen_stream"))
-                }
-
-                Log.d(TAG, "Screen capture started")
+                Log.d(TAG, "Screen capture started (multi-peer ready)")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Capture start failed", e)
@@ -330,6 +336,58 @@ class ScreenCaptureService : Service() {
             }
         }
     }
+
+
+//    private fun startCaptureOnce() {
+//        synchronized(this) {
+//            if (captureStarted) return
+//            captureStarted = true
+//        }
+//
+//        executor.execute {
+//            try {
+//                val intent = projectionIntent ?: throw IllegalStateException("Projection intent null")
+//
+//                val egl = EglBase.create()
+//                val helper = SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext)
+//
+//                screenCapturer = ScreenCapturerAndroid(
+//                    intent,
+//                    object : MediaProjection.Callback() {
+//                        override fun onStop() {
+//                            Log.w(TAG, "MediaProjection stopped by system")
+//                            stopScreenShare()
+//                        }
+//                    }
+//                )
+//
+//                videoSource = peerConnectionFactory.createVideoSource(true)
+//                videoSource!!.adaptOutputFormat(720, 1280, 15)
+//
+//                screenCapturer!!.initialize(
+//                    helper,
+//                    this,
+//                    videoSource!!.capturerObserver
+//                )
+//
+//                screenCapturer!!.startCapture(720, 1280, 15)
+//
+//                videoTrack = peerConnectionFactory.createVideoTrack("screen", videoSource!!)
+//                videoTrack!!.setEnabled(true)
+//
+//
+//                Handler(mainLooper).post {
+//                    peerConnection?.addTrack(videoTrack!!, listOf("screen_stream"))
+//                }
+//
+//                Log.d(TAG, "Screen capture started")
+//
+//            } catch (e: Exception) {
+//                Log.e(TAG, "Capture start failed", e)
+//                stopScreenShare()
+//            }
+//        }
+//    }
 
     // =====================================================
     // SIGNALING
@@ -348,42 +406,100 @@ class ScreenCaptureService : Service() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = JSONObject(text)
                 when (json.optString("type")) {
+//                    "requestShare" -> {
+//                        shareRequested = true
+//                        maybeCreateOffer()
+//                    }
                     "requestShare" -> {
-                        shareRequested = true
-                        maybeCreateOffer()
+                        val dashboardId = json.getString("dashboardId")
+
+                        val pc = createPeerConnection(dashboardId)
+                        peerConnections[dashboardId] = pc
+
+                        pc.createOffer(object : SdpObserver {
+                            override fun onCreateSuccess(sdp: SessionDescription) {
+                                pc.setLocalDescription(this, sdp)
+
+                                sendSignal(
+                                    mapOf(
+                                        "type" to "offer",
+                                        "deviceId" to deviceId,
+                                        "dashboardId" to dashboardId,
+                                        "sdp" to mapOf("type" to "offer", "sdp" to sdp.description)
+                                    )
+                                )
+                            }
+
+                            override fun onSetSuccess() {}
+                            override fun onSetFailure(p0: String?) {}
+                            override fun onCreateFailure(p0: String?) {}
+                        }, MediaConstraints())
                     }
                     "answer" -> handleAnswer(json)
                     "candidate" -> handleCandidate(json)
-                    "stopShare" -> stopScreenShare()
+//                    "stopShare" -> stopScreenShare()
+                    "stopShare" -> {
+
+                        val dashboardId = json.getString("dashboardId")
+
+                        Log.d(TAG, "Stopping share for $dashboardId")
+
+                        peerConnections[dashboardId]?.close()
+
+                        peerConnections.remove(dashboardId)
+
+                        // 🔥 Only stop screen capture if no dashboards left
+                        if (peerConnections.isEmpty()) {
+                            Log.d(TAG, "No dashboards left, stopping capture")
+                            stopScreenShare()
+                        }
+                    }
                 }
             }
         })
     }
 
-    private fun maybeCreateOffer() {
-        if (!captureStarted || !wsConnected || !shareRequested || offerSent) return
-        offerSent = true
+//    private fun maybeCreateOffer() {
+//        if (!captureStarted || !wsConnected || !shareRequested || offerSent) return
+//        offerSent = true
+//
+//        peerConnection?.createOffer(object : SdpObserver {
+//            override fun onCreateSuccess(sdp: SessionDescription) {
+//                peerConnection?.setLocalDescription(this, sdp)
+//                sendSignal(
+//                    mapOf(
+//                        "type" to "offer",
+//                        "deviceId" to deviceId,
+//                        "sdp" to mapOf("type" to "offer", "sdp" to sdp.description)
+//                    )
+//                )
+//            }
+//            override fun onSetSuccess() {}
+//            override fun onSetFailure(p0: String?) {}
+//            override fun onCreateFailure(p0: String?) {}
+//        }, MediaConstraints())
+//    }
 
-        peerConnection?.createOffer(object : SdpObserver {
-            override fun onCreateSuccess(sdp: SessionDescription) {
-                peerConnection?.setLocalDescription(this, sdp)
-                sendSignal(
-                    mapOf(
-                        "type" to "offer",
-                        "deviceId" to deviceId,
-                        "sdp" to mapOf("type" to "offer", "sdp" to sdp.description)
-                    )
-                )
-            }
-            override fun onSetSuccess() {}
-            override fun onSetFailure(p0: String?) {}
-            override fun onCreateFailure(p0: String?) {}
-        }, MediaConstraints())
-    }
+//    private fun handleAnswer(msg: JSONObject) {
+//        val sdp = msg.getJSONObject("sdp").getString("sdp")
+//        peerConnection?.setRemoteDescription(
+//            object : SdpObserver {
+//                override fun onSetSuccess() {}
+//                override fun onSetFailure(p0: String?) {}
+//                override fun onCreateFailure(p0: String?) {}
+//                override fun onCreateSuccess(p0: SessionDescription?) {}
+//            },
+//            SessionDescription(SessionDescription.Type.ANSWER, sdp)
+//        )
+//    }
 
     private fun handleAnswer(msg: JSONObject) {
+        val dashboardId = msg.getString("dashboardId")
         val sdp = msg.getJSONObject("sdp").getString("sdp")
-        peerConnection?.setRemoteDescription(
+
+        val pc = peerConnections[dashboardId] ?: return
+
+        pc.setRemoteDescription(
             object : SdpObserver {
                 override fun onSetSuccess() {}
                 override fun onSetFailure(p0: String?) {}
@@ -394,9 +510,24 @@ class ScreenCaptureService : Service() {
         )
     }
 
+//    private fun handleCandidate(msg: JSONObject) {
+//        val c = msg.getJSONObject("candidate")
+//        peerConnection?.addIceCandidate(
+//            IceCandidate(
+//                c.getString("sdpMid"),
+//                c.getInt("sdpMLineIndex"),
+//                c.getString("candidate")
+//            )
+//        )
+//    }
+
     private fun handleCandidate(msg: JSONObject) {
+        val dashboardId = msg.getString("dashboardId")
         val c = msg.getJSONObject("candidate")
-        peerConnection?.addIceCandidate(
+
+        val pc = peerConnections[dashboardId] ?: return
+
+        pc.addIceCandidate(
             IceCandidate(
                 c.getString("sdpMid"),
                 c.getInt("sdpMLineIndex"),
@@ -425,8 +556,11 @@ class ScreenCaptureService : Service() {
         videoTrack?.dispose()
         videoSource?.dispose()
 
-        peerConnection?.close()
-        peerConnection = null
+//        peerConnection?.close()
+//        peerConnection = null
+
+        peerConnections.values.forEach { it.close() }
+        peerConnections.clear()
 
         try { ws.close(1000, "stop") } catch (_: Exception) {}
 
@@ -444,5 +578,66 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         stopScreenShare()
         super.onDestroy()
+    }
+
+    private fun createPeerConnection(dashboardId: String): PeerConnection {
+
+        val iceServers = listOf(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("turn:18.234.108.84:3478")
+                .setUsername("peach")
+                .setPassword("PeAmISo@2026")
+                .createIceServer()
+        )
+
+        val config = PeerConnection.RTCConfiguration(iceServers)
+
+        val pc = peerConnectionFactory.createPeerConnection(
+            config,
+            object : PeerConnection.Observer {
+
+                override fun onIceCandidate(c: IceCandidate) {
+                    sendSignal(
+                        mapOf(
+                            "type" to "candidate",
+                            "deviceId" to deviceId,
+                            "dashboardId" to dashboardId,
+                            "candidate" to mapOf(
+                                "candidate" to c.sdp,
+                                "sdpMid" to c.sdpMid,
+                                "sdpMLineIndex" to c.sdpMLineIndex
+                            )
+                        )
+                    )
+                }
+
+                override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
+                    Log.d(TAG, "[$dashboardId] PC state=$state")
+
+                    if (state == PeerConnection.PeerConnectionState.FAILED ||
+                        state == PeerConnection.PeerConnectionState.CLOSED
+                    ) {
+                        peerConnections.remove(dashboardId)
+                    }
+                }
+
+                override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
+                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+                override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
+                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
+                override fun onRemoveStream(p0: MediaStream?) {}
+                override fun onDataChannel(p0: DataChannel?) {}
+                override fun onAddStream(p0: MediaStream?) {}
+                override fun onRenegotiationNeeded() {}
+                override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
+                override fun onIceConnectionReceivingChange(p0: Boolean) {}
+            }
+        )!!
+
+        videoTrack?.let {
+            pc.addTrack(it, listOf("screen_stream"))
+        }
+
+        return pc
     }
 }
