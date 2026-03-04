@@ -1,5 +1,6 @@
-package com.mipresence.mdm.admin
+package com.mip.mdm.admin
 
+import android.annotation.SuppressLint
 import android.app.*
 import android.app.admin.DevicePolicyManager
 import android.content.Context
@@ -65,13 +66,38 @@ class ScreenCaptureService : Service() {
         super.onCreate()
 
 
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val enterpriseId = getEnterpriseDeviceId(dpm)
+//        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+//        val enterpriseId = getEnterpriseDeviceId(dpm)
 
-        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
+        val imei = getIMEI1(this);
+
+        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${imei}"
         createNotificationChannel()
 
         Log.d(TAG, "Service created: $deviceId")
+    }
+
+    @SuppressLint("MissingPermission", "HardwareIds")
+    fun getIMEI1(context: Context): String {
+
+        return try {
+
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                val imei1 = tm.getImei(0)
+                val imei2 = tm.getImei(1)
+
+                imei1 ?: imei2
+
+            } else {
+                tm.deviceId
+            }
+
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     @Suppress("DEPRECATION")

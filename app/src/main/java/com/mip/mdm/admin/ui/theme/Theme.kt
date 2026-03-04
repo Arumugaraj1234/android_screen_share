@@ -1,4 +1,4 @@
-package com.mipresence.mdm.admin.ui.theme
+package com.mip.mdm.admin.ui.theme
 
 import android.app.Activity
 import android.os.Build

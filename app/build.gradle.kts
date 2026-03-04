@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.mipresence.mdm.admin"
+    namespace = "com.mip.mdm.admin"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.mipresence.mdm.admin"
+        applicationId = "com.mip.mdm.admin"
         minSdk = 24
         targetSdk = 34
         versionCode = 1

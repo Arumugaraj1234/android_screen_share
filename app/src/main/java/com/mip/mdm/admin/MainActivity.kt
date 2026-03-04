@@ -1,6 +1,7 @@
-package com.mipresence.mdm.admin
+package com.mip.mdm.admin
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -19,7 +20,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import android.view.WindowManager
 import android.app.admin.DevicePolicyManager
+import android.telephony.TelephonyManager
 import android.widget.TextView
+import androidx.annotation.RequiresApi
+import androidx.core.app.ActivityCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -73,6 +77,18 @@ class MainActivity : AppCompatActivity() {
             ensureNotificationPermissionAndStart()
         }
 
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_PHONE_STATE
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.READ_PHONE_STATE),
+                1001
+            )
+        }
+
         findViewById<Button>(R.id.btnStop).setOnClickListener {
             stopScreenShareService()
         }
@@ -80,10 +96,65 @@ class MainActivity : AppCompatActivity() {
 
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val enterpriseId = getEnterpriseDeviceId(this)
+//
+//
+//        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
 
-        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
+        val deviceId= getIMEI1(this)
 
         txtId.text = getString(R.string.enterprise_id, deviceId)
+    }
+
+//    @SuppressLint("MissingPermission")
+//    fun getIMEI(context: Context): String? {
+//
+//        val telephonyManager =
+//            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+//
+//        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+//            telephonyManager.imei   // or telephonyManager.getImei()
+//        } else {
+//            // telephonyManager.deviceId
+//            "0"
+//        }
+//    }
+
+
+//    @SuppressLint("MissingPermission")
+//    fun getIMEI1(context: Context): String? {
+//
+//        val telephonyManager =
+//            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+//
+//        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+//            telephonyManager.getImei(0)  // SIM slot 0
+//        } else {
+//            telephonyManager.imei
+//            //telephonyManager.deviceId
+//        }
+//    }
+
+    @SuppressLint("MissingPermission", "HardwareIds")
+    fun getIMEI1(context: Context): String {
+
+        return try {
+
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                val imei1 = tm.getImei(0)
+                val imei2 = tm.getImei(1)
+
+                imei1 ?: imei2
+
+            } else {
+                tm.deviceId
+            }
+
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     // --------------------------------------------------

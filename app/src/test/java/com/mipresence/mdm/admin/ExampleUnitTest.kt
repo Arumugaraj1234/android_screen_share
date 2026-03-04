@@ -1,4 +1,4 @@
-package com.mipresence.mdm.admin
+package com.mip.mdm.admin
 
 import org.junit.Test
 
