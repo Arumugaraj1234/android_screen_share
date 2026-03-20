@@ -127,7 +127,37 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
+        startAsForeground()
+        acquireWakeLock()
+
+        if (captureStarted || stopping) {
+            Log.w(TAG, "Already running, ignoring start")
+            return START_NOT_STICKY
+        }
+
+        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
+        val data = intent?.getParcelableExtra<Intent>("data")
+
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            Log.e(TAG, "Invalid projection permission")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // store projection intent once
+        projectionIntent = data
+
+        initPeerConnectionFactory()
+        initWebSocket()
+
+        startCaptureOnce()
+
+        return START_NOT_STICKY
+    }
+
+    /*
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
         startAsForeground()
@@ -161,6 +191,8 @@ class ScreenCaptureService : Service() {
 
         return START_NOT_STICKY
     }
+
+    */
 
 
     private fun acquireWakeLock() {
@@ -316,6 +348,11 @@ class ScreenCaptureService : Service() {
         synchronized(this) {
             if (captureStarted) return
             captureStarted = true
+        }
+
+        if (screenCapturer != null) {
+            Log.w(TAG, "ScreenCapturer already exists")
+            return
         }
 
         executor.execute {
@@ -617,6 +654,9 @@ class ScreenCaptureService : Service() {
         )
 
         val config = PeerConnection.RTCConfiguration(iceServers)
+
+        config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        config.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
 
         val pc = peerConnectionFactory.createPeerConnection(
             config,
