@@ -3,235 +3,309 @@ package com.mip.mdm.admin
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.telephony.TelephonyManager
 import android.util.Log
+import android.view.View
+import android.view.WindowManager
+import android.view.animation.AlphaAnimation
+import android.view.animation.Animation
+import android.view.animation.AnimationSet
+import android.view.animation.ScaleAnimation
 import android.widget.Button
+import android.widget.TextView
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import android.view.WindowManager
-import android.app.admin.DevicePolicyManager
-import android.telephony.TelephonyManager
-import android.widget.TextView
-import androidx.annotation.RequiresApi
-import androidx.core.app.ActivityCompat
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var projectionManager: MediaProjectionManager
-    private var captureInProgress = false   // 🔒 CRITICAL LOCK
-    private lateinit var deviceId: String
 
-    // --------------------------------------------------
-    // 🔔 Notification permission (Android 13+)
-    // --------------------------------------------------
+    // UI refs
+    private lateinit var btnStart: Button
+    private lateinit var btnStop: Button
+    private lateinit var txtStatus: TextView
+    private lateinit var txtEnterpriseId: TextView
+    private lateinit var dotCore: View
+    private lateinit var dotPulse: View
+    private lateinit var badgeLive: TextView
+
+    // State
+    @Volatile private var captureInProgress = false
+    private var pulseAnim: Animation? = null
+
+    // ──────────────────────────────────────────────────────────
+    // Permission launchers
+    // ──────────────────────────────────────────────────────────
+
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
                 requestScreenCapture()
             } else {
+                captureInProgress = false
+                setStatus(ScreenState.IDLE)
                 openNotificationSettings()
             }
         }
 
-    // --------------------------------------------------
-    // 🎥 Screen capture permission (MediaProjection)
-    // --------------------------------------------------
     private val screenCaptureLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             captureInProgress = false
-
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 startScreenShareService(result.resultCode, result.data!!)
+                setStatus(ScreenState.ACTIVE)
             } else {
-                Log.w("MainActivity", "Screen capture permission denied")
+                Log.w(TAG, "Screen capture permission denied or cancelled")
+                setStatus(ScreenState.IDLE)
             }
         }
 
+    private val phoneStatePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            updateDeviceIdDisplay()
+        }
+
+    // ──────────────────────────────────────────────────────────
+    // onCreate
+    // ──────────────────────────────────────────────────────────
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        StatusBarHelper.applyDarkStatusBar(this)
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        btnStart        = findViewById(R.id.btnStart)
+        btnStop         = findViewById(R.id.btnStop)
+        txtStatus       = findViewById(R.id.txtStatus)
+        txtEnterpriseId = findViewById(R.id.txtEnterpriseId)
+        dotCore         = findViewById(R.id.dotCore)
+        dotPulse        = findViewById(R.id.dotPulse)
+        badgeLive       = findViewById(R.id.badgeLive)
 
         projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
+        setStatus(ScreenState.IDLE)
         requestIgnoreBatteryOptimizations()
 
-        findViewById<Button>(R.id.btnStart).setOnClickListener {
-            if (captureInProgress) {
-                Log.w("MainActivity", "Capture already in progress, ignoring")
-                return@setOnClickListener
-            }
-
+        btnStart.setOnClickListener {
+            if (captureInProgress) return@setOnClickListener
             captureInProgress = true
+            setStatus(ScreenState.CONNECTING)
             ensureNotificationPermissionAndStart()
         }
 
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.READ_PHONE_STATE
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.READ_PHONE_STATE),
-                1001
-            )
-        }
-
-        findViewById<Button>(R.id.btnStop).setOnClickListener {
+        btnStop.setOnClickListener {
             stopScreenShareService()
+            setStatus(ScreenState.IDLE)
         }
-        val txtId = findViewById<TextView>(R.id.txtEnterpriseId)
 
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val enterpriseId = getEnterpriseDeviceId(this)
-//
-//
-//        deviceId = "${Build.MANUFACTURER}-${Build.MODEL}-${System.currentTimeMillis()}-${enterpriseId}"
-
-        val deviceId= getIMEI1(this)
-
-        txtId.text = getString(R.string.enterprise_id, deviceId)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            phoneStatePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+        } else {
+            updateDeviceIdDisplay()
+        }
     }
 
-//    @SuppressLint("MissingPermission")
-//    fun getIMEI(context: Context): String? {
-//
-//        val telephonyManager =
-//            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-//
-//        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-//            telephonyManager.imei   // or telephonyManager.getImei()
-//        } else {
-//            // telephonyManager.deviceId
-//            "0"
-//        }
-//    }
+    // ──────────────────────────────────────────────────────────
+    // UI state machine
+    // ──────────────────────────────────────────────────────────
 
+    enum class ScreenState { IDLE, CONNECTING, ACTIVE }
 
-//    @SuppressLint("MissingPermission")
-//    fun getIMEI1(context: Context): String? {
-//
-//        val telephonyManager =
-//            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-//
-//        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-//            telephonyManager.getImei(0)  // SIM slot 0
-//        } else {
-//            telephonyManager.imei
-//            //telephonyManager.deviceId
-//        }
-//    }
+    private fun setStatus(state: ScreenState) {
+        when (state) {
+            ScreenState.IDLE -> {
+                txtStatus.text = getString(R.string.status_idle)
+                txtStatus.setTextColor(ContextCompat.getColor(this, R.color.text_muted))
+                badgeLive.visibility = View.GONE
+                setDotColor(R.color.dot_idle)
+                stopPulse()
+                btnStart.isEnabled = true
+                btnStart.alpha = 1f
+                btnStop.isEnabled = false
+                btnStop.alpha = 0.4f
+            }
+            ScreenState.CONNECTING -> {
+                txtStatus.text = getString(R.string.status_connecting)
+                txtStatus.setTextColor(ContextCompat.getColor(this, R.color.accent_blue))
+                badgeLive.visibility = View.GONE
+                setDotColor(R.color.accent_blue)
+                startPulse(R.color.accent_blue)
+                btnStart.isEnabled = false
+                btnStart.alpha = 0.5f
+                btnStop.isEnabled = false
+                btnStop.alpha = 0.4f
+            }
+            ScreenState.ACTIVE -> {
+                txtStatus.text = getString(R.string.status_active)
+                txtStatus.setTextColor(ContextCompat.getColor(this, R.color.accent_green))
+                badgeLive.visibility = View.VISIBLE
+                setDotColor(R.color.accent_green)
+                startPulse(R.color.accent_green)
+                btnStart.isEnabled = false
+                btnStart.alpha = 0.4f
+                btnStop.isEnabled = true
+                btnStop.alpha = 1f
+            }
+        }
+    }
+
+    private fun setDotColor(colorRes: Int) {
+        val color = ContextCompat.getColor(this, colorRes)
+        (dotCore.background as? GradientDrawable)?.setColor(color)
+    }
+
+    private fun startPulse(colorRes: Int) {
+        val color = ContextCompat.getColor(this, colorRes)
+        (dotPulse.background as? GradientDrawable)?.setColor(color)
+
+        val scale = ScaleAnimation(
+            0.6f, 2.2f, 0.6f, 2.2f,
+            Animation.RELATIVE_TO_SELF, 0.5f,
+            Animation.RELATIVE_TO_SELF, 0.5f
+        )
+        val fade = AlphaAnimation(0.7f, 0f)
+        val set = AnimationSet(true).apply {
+            addAnimation(scale)
+            addAnimation(fade)
+            duration = 1400
+            repeatCount = Animation.INFINITE
+            repeatMode = Animation.RESTART
+        }
+        pulseAnim = set
+        dotPulse.alpha = 1f
+        dotPulse.startAnimation(set)
+    }
+
+    private fun stopPulse() {
+        dotPulse.clearAnimation()
+        dotPulse.alpha = 0f
+        pulseAnim = null
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Device ID
+    // ──────────────────────────────────────────────────────────
+
+    private fun updateDeviceIdDisplay() {
+        txtEnterpriseId.text = resolveDeviceId()
+    }
 
     @SuppressLint("MissingPermission", "HardwareIds")
-    fun getIMEI1(context: Context): String {
-
-        return try {
-
-            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-                val imei1 = tm.getImei(0)
-                val imei2 = tm.getImei(1)
-
-                imei1 ?: imei2
-
-            } else {
-                tm.deviceId
+    fun resolveDeviceId(): String {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                val imei = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    tm.getImei(0) ?: tm.getImei(1)
+                } else {
+                    @Suppress("DEPRECATION") tm.deviceId
+                }
+                if (!imei.isNullOrBlank()) return imei
+            } catch (e: Exception) {
+                Log.w(TAG, "IMEI unavailable: ${e.message}")
             }
-
-        } catch (e: Exception) {
-            ""
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                val id = dpm.enrollmentSpecificId
+                if (!id.isNullOrBlank()) return id
+            } catch (e: Exception) { /* continue */ }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val serial = Build.getSerial()
+                if (!serial.isNullOrBlank() && serial != Build.UNKNOWN) return serial
+            } catch (e: SecurityException) { /* continue */ }
+        }
+
+        @Suppress("DEPRECATION")
+        val legacy = Build.SERIAL
+        if (!legacy.isNullOrBlank() && legacy != Build.UNKNOWN) return legacy
+
+        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+        if (!androidId.isNullOrBlank()) return androidId
+
+        return "UNKNOWN"
     }
 
-    // --------------------------------------------------
-    // 🔔 Permission flow
-    // --------------------------------------------------
+    // ──────────────────────────────────────────────────────────
+    // Permission flow
+    // ──────────────────────────────────────────────────────────
+
     private fun ensureNotificationPermissionAndStart() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
+                this, Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
-
             if (!granted) {
-                notificationPermissionLauncher.launch(
-                    Manifest.permission.POST_NOTIFICATIONS
-                )
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 return
             }
         }
-
         requestScreenCapture()
     }
 
-    // --------------------------------------------------
-    // 🎥 Request MediaProjection
-    // --------------------------------------------------
     private fun requestScreenCapture() {
-        val intent = projectionManager.createScreenCaptureIntent()
-        screenCaptureLauncher.launch(intent)
+        screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
 
-    // --------------------------------------------------
-    // ▶ Start foreground service (ONE TIME ONLY)
-    // --------------------------------------------------
-    private fun startScreenShareService(
-        resultCode: Int,
-        data: Intent
-    ) {
-        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+    // ──────────────────────────────────────────────────────────
+    // Service control
+    // ──────────────────────────────────────────────────────────
+
+    private fun startScreenShareService(resultCode: Int, data: Intent) {
+        val intent = Intent(this, ScreenCaptureService::class.java).apply {
             putExtra("resultCode", resultCode)
             putExtra("data", data)
         }
-
-        ContextCompat.startForegroundService(this, serviceIntent)
-        Log.d("MainActivity", "Screen share service started")
+        ContextCompat.startForegroundService(this, intent)
     }
 
-    // --------------------------------------------------
-    // ⛔ Stop service
-    // --------------------------------------------------
     private fun stopScreenShareService() {
         stopService(Intent(this, ScreenCaptureService::class.java))
-        Log.d("MainActivity", "Screen share service stopped")
     }
 
-    // --------------------------------------------------
-    // 🔋 Battery optimization (OEM survival)
-    // --------------------------------------------------
+    // ──────────────────────────────────────────────────────────
+    // Battery optimisation
+    // ──────────────────────────────────────────────────────────
+
     private fun requestIgnoreBatteryOptimizations() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val pkg = packageName
-
-        if (!pm.isIgnoringBatteryOptimizations(pkg)) {
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             try {
                 startActivity(
                     Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                        .setData(Uri.parse("package:$pkg"))
+                        .setData(Uri.parse("package:$packageName"))
                 )
             } catch (e: Exception) {
-                Log.w("MainActivity", "Battery optimization request failed")
+                Log.w(TAG, "Battery optimisation request: ${e.message}")
             }
         }
     }
 
-    // --------------------------------------------------
-    // 🔔 Notification settings fallback
-    // --------------------------------------------------
     private fun openNotificationSettings() {
         try {
             startActivity(
@@ -246,34 +320,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @Suppress("DEPRECATION")
-    fun getEnterpriseDeviceId(context: Context): String {
-        return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
-                    as DevicePolicyManager
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                dpm.enrollmentSpecificId ?: "ENROLLMENT_ID_NULL"
-
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
-                    Build.getSerial()
-                } catch (e: SecurityException) {
-                    "SERIAL_PERMISSION_DENIED"
-                }
-
-            } else {
-                Build.SERIAL ?: "SERIAL_NULL"
-            }
-
-        } catch (e: Exception) {
-            "ID_UNAVAILABLE"
-        }
-    }
-
+    // ──────────────────────────────────────────────────────────
+    // Lifecycle
+    // ──────────────────────────────────────────────────────────
 
     override fun onDestroy() {
+        stopPulse()
+        captureInProgress = false
         stopScreenShareService()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }
